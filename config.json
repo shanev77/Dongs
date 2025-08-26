@@ -1,0 +1,12 @@
+{
+  "use_llm": true,
+  "window_scale": 1.0,
+  "population_size": 10,
+  "bots_in_play": 6,
+  "episodes_per_generation": 6,
+  "use_runner": false,
+  "ollama": {
+    "base_url": "http://192.168.0.10:11434",
+    "model": "granite3.1-moe:1b"
+  }
+}
