@@ -112,6 +112,11 @@ vx = (move_x + edge_repel + center_pull + waypoint_x) * speed * dt
 vy = (move_y + edge_repel + center_pull + waypoint_y) * speed * dt
 
 
+### Neural Network Diagram
+
+![Dong Neural Network](/dongs_nn_diagram.png)
+
+
 Stronger edge repulsion and center pull prevent wall-hugging.
 Explore bias drives waypoints for roaming.
 Rest & Learning
