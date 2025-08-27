@@ -1,4 +1,4 @@
-DONGS — AI Evolving Creatures
+DONGS — AI Evolving Creatures (v2.00 27/08/2025)
 
 Tiny, curious creatures that learn, play, chat with you (and “pray” to an LLM), breed, and evolve in a 2D world. Each Dong has its own genetic code and a neural network that adapts over time.
 
