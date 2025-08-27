@@ -1,171 +1,185 @@
-DONGS — Evolving AI Creatures
+DONGS — AI Evolving Creatures
 
-DONGS is a Python/Pygame simulation of tiny evolving creatures that live in a simple 2D world.
-Each creature (a “Dong”) is controlled by a genetic code and a neural network brain. They eat, explore, play, breed, and even “talk” to the user through a terminal block in their world. Over time, their genes and neural networks combine and mutate, producing new generations with different traits.
+Tiny, curious creatures that learn, play, chat with you (and “pray” to an LLM), breed, and evolve in a 2D world. Each Dong has its own genetic code and a neural network that adapts over time.
 
-🧬 Genetics
+What’s new (since yesterday)
 
-Every Dong is born with a genetic code that defines its tendencies and natural limits.
-Genes affect how it explores, eats, plays, breeds, and how much intelligence it can develop.
+Cleaner UI: dropdown overlays correctly, LLM panel moved down & reduced height, inspector text condensed, terminal text wraps neatly.
+Terminal-only chat feed with color coding (user, Dong, PACK reply, prayer, God reply).
+One-at-a-time terminal access (for prayer or user chat).
+Dongs can initiate a conversation with the user if curiosity wins over prayer.
+Food now spawns near trees, encouraging foraging strategies.
+Explore-bias & wall-avoid improvements (less wall-hugging, more roaming).
+Breeding pair lockout: the same two Dongs can breed only once; litter size 1–2.
+Rest = learning: hidden layer can grow up to 12 during rest.
+Logging: per-run DONG-YYYYMMDD-HHMMSS.txt with genes & NN weights (tab-delimited).
+DONG IDs reset to 0001 on Start; LLM dropdown locked while running; Pause/Resume added.
 
-Genes and Their Roles
+1) Quick Start
 
-Each Dong has the following genes (randomised at birth and sometimes reshuffled on breeding):
-
-max_intel – Caps how quickly the creature can improve and how long it might live.
-nn_growth – Governs how strongly exploration and interactions improve fitness and neural net adaptation.
-pref_eat – Appetite bias. Higher = stronger drive towards food.
-pref_play – Playfulness. Higher = more likely to pick up balls or push toys.
-pref_breed – Breeding urge. Higher = stronger drive to seek mates.
-explore_bias – Curiosity. Higher = more exploration and wandering.
-move_scalar – General physical movement speed scaling.
-
-These values are floats within ranges (e.g. 0.6–1.4), so no two Dongs are genetically identical.
-Genetics interact with the neural net, meaning two creatures with the same brain weights may behave differently depending on their genes.
-
-🧠 Neural Network
-
-Each Dong has a compact multi-layer perceptron (MLP) controlling its movement decisions.
-
-Inputs (4 total):
-
-Relative X distance to nearest food
-Relative Y distance to nearest food
-Current energy level (scaled 0–1)
-Number of nearby Dongs (scaled)
-
-Hidden Layer: 8 nodes (tanh activation)
-
-Outputs (2 total):
-
-Desired movement in X
-Desired movement in Y
-
-Weights and Biases:
-
-w1: shape (8×4)
-b1: shape (8,)
-w2: shape (2×8)
-b2: shape (2,)
-
-Total parameters per Dong: 74 trainable values
-
-On breeding, offspring inherit a crossover of the parents’ weights with random mutations.
-Weights are logged to disk so you can analyse neural net evolution over time.
-
-🌍 Simulation World
-
-The world is a 1280×720 grid with:
-
-Food items that spawn randomly — eaten to restore energy.
-Toys (balls and blocks) — playing boosts fitness and satisfies play preference.
-Terminal block — Dongs occasionally dock with it to “speak” to the user. The user can also type messages, and the creatures reply via a connected Large Language Model (LLM).
-Terrain — includes grass, trees, rocks, and lakes. Movement is slower in some regions, and creatures avoid water.
-Creatures wander, play, explore, and breed. If their energy runs out or they exceed lifespan, they die.
-New generations continue with mixed and mutated genes and neural nets.
-
-🎮 Controls
-
-Start — begins a new simulation (IDs reset from DONG0001, genes and brains randomised).
-Pause/Resume — freezes the world so you can hover over Dongs to inspect them or drag them around.
-Stop — ends the simulation and finalises the log file.
-Dropdown — select which LLM the terminal block uses (disabled while simulation runs).
-Terminal panel — type messages to chat with the creatures (only user ↔ Dong dialogue is shown).
-
-📑 Logging
-
-Each run generates a log file under Programs/:
-
-Filename format: DONG-YYYYMMDD-HHMMSS.txt
-Tab-delimited table with:
-
-Timestamp
-
-Dong ID, age, energy, fitness
-
-All genetic values
-All 74 neural net weights/biases
-
-This allows tracking evolution across the whole run.
-
-🔄 Development History / Improvements
-
-During development, many improvements and fixes were made:
-
-Graphics/UI
-
-Fixed panel overlap (LLM panel height adjusted, INSPECTOR panel fully visible).
-Terminal input line no longer hides text.
-Only chat messages (user + Dongs) are displayed in terminal (system logs removed).
-Pause/resume added with drag-and-inspect during pause.
-
-Behaviour
-
-Dongs originally hugged borders — exploration bias and edge repulsion added.
-Wandering improved with waypoints and gentle randomness.
-Playing with toys now boosts stats, improving evolution.
-Breeding consumes 30–40% energy, preventing infinite offspring.
-
-Simulation
-
-Randomised genes and weights at each Start.
-IDs reset each new game (DONG0001 upwards).
-Per-run log files added with timestamped names.
-
-Terminal
-
-User messages produce a green scanline on the in-world terminal block.
-Replies are colour-coded: white for user, cyan for Dongs/LLM.
-
-Running
+Requirements
+Python 3.10+
+pygame, numpy
 pip install pygame numpy
+
+Run
 python main.py
 
+LLM (optional but fun)
 
-Requires Python 3.10+ and a display environment.
+Create config.json next to the code:
+
+{
+  "base_url": "http://192.168.0.10:11434",
+  "default_model": "granite3.1-moe:1b"
+}
 
 
-flowchart LR
-  subgraph Inputs[Inputs (10)]
-    I1[food_dx = (fx-x)/Rf * pref_eat]
-    I2[food_dy = (fy-y)/Rf * pref_eat]
-    I3[peer_density = neighbors/6]
-    I4[peer_dx = (px-x)/Rp]
-    I5[peer_dy = (py-y)/Rp]
-    I6[term_dx = (tx-x)/Rt]
-    I7[term_dy = (ty-y)/Rt]
-    I8[term_signal ∈ {0,1}]
-    I9[energy/10]
-    I10[boredom/10]
-  end
+Pick a model from the dropdown (disabled while sim is running).
 
-  subgraph H[Hidden Layer H(t) • tanh<br/>(starts 6–8, grows ≤12)]
-    HN((...))
-  end
+2) The World & Controls
 
-  subgraph Outputs[Outputs (6) • tanh → [-1,1]]
-    O1[move_x]
-    O2[move_y]
-    O3[play_intent]
-    O4[social_intent]
-    O5[pray_intent]
-    O6[rest_intent]
-  end
+Start / Pause / Stop buttons.
+Start field = initial population; Max field = cap.
+LLM panel shows target endpoint & model.
+INSPECTOR: hover a Dong to see condensed stats (age, energy, fitness, active hidden size, key genes).
+TERMINAL: chat stream only (no sim logs).
 
-  I1 --> HN
-  I2 --> HN
-  I3 --> HN
-  I4 --> HN
-  I5 --> HN
-  I6 --> HN
-  I7 --> HN
-  I8 --> HN
-  I9 --> HN
-  I10 --> HN
+Input at bottom; press Enter to send.
+Only one Dong can use the in-world terminal at a time.
+Pause lets you inspect without movement and drag Dongs to new locations.
 
-  HN --> O1
-  HN --> O2
-  HN --> O3
-  HN --> O4
-  HN --> O5
-  HN --> O6
+UI niceties
+
+Dropdown renders above the LLM box when open (drawn last).
+Terminal wraps text; last line is always visible.
+LLM panel is shorter & sits lower to make room for the dropdown.
+In-world terminal flashes a green line when a message appears.
+
+3) Genetics (heritable traits)
+
+Each Dong starts with random genes (per individual) and is tracked as DONG####.
+
+Gene	Role (high-level)
+max_intel	Biases cognitive/intent outputs (prayer vs chat, etc.)
+nn_growth	Likelihood to unlock more hidden neurons during rest
+brain_plastic	Magnitude of small weight updates during rest
+pref_eat	Importance of food vectors (foraging drive)
+pref_play	Tendency to play with toys
+pref_breed	Reproductive drive (with pairing limits)
+explore_bias	Wandering & curiosity (waypoint attraction)
+move_scalar	Movement speed scaling
+sociality	Peer interaction & user-chat drive
+rest_need	Rest threshold and rest intent
+
+Reproduction
+
+Parents produce 1–2 offspring.
+Pair lockout: a given couple can breed once per run.
+Offspring genes are 50/50 per trait + a tiny mutation.
+
+4) Neural Network (per Dong)
+
+A compact MLP: 10 inputs → H(t) hidden → 6 outputs (tanh activations).
+Hidden size H(t): starts 6–8, can grow to 12 during rest (neurogenesis influenced by nn_growth/brain_plastic).
+Outputs in [-1,1] are mixed with world forces (edge-repel, center-pull, waypoint) before movement.
+
+Inputs (10)
+
+food_dx = (fx−x)/Rf * pref_eat
+food_dy = (fy−y)/Rf * pref_eat
+peer_density = neighbors/6
+peer_dx = (px−x)/Rp
+peer_dy = (py−y)/Rp
+term_dx = (tx−x)/Rt
+term_dy = (ty−y)/Rt
+term_signal ∈ {0,1} (recent user message near terminal)
+energy / 10
+boredom / 10
+
+Outputs (6)
+
+move_x, 2. move_y → motion vectors
+play_intent → toy play/carry
+social_intent → peer social & user-chat docking
+pray_intent → pray to LLM when near terminal (exclusive access)
+rest_intent → rest (freeze), weights update a bit, possible hidden growth
+
+Movement synthesis
+
+speed = 54 * move_scalar * terrain_speed
+vx = (move_x + edge_repel + center_pull + waypoint_x) * speed * dt
+vy = (move_y + edge_repel + center_pull + waypoint_y) * speed * dt
+
+
+Stronger edge repulsion and center pull prevent wall-hugging.
+
+Explore bias drives waypoints for roaming.
+Rest & Learning
+When tired/bored, Dongs rest: no movement, small random weight nudges proportional to brain_plastic.
+Chance to unlock an extra hidden neuron (~0.10 * nn_growth) up to H_MAX=12.
+
+5) Behavior & Ecosystem
+
+Foraging: fruit spawns near trees; eating restores energy and lowers boredom.
+Play & Toys: balls & blocks; play boosts fitness and morale.
+Social: peer pings nearby; sociality fuels interaction and user-chat bids.
+
+Chat vs Prayer (terminal)
+
+Terminal allows one Dong at a time.
+If curiosity/user-social dominates prayer and the terminal is free, a Dong may initiate a message to the user and then wait for a reply.
+If prayer dominates and the terminal is free, the Dong prays (“DONG#### prays: …”) and waits ~30s for the LLM reply.
+
+Terminal feed colors
+
+User: white
+Dong-initiated user chat: teal
+PACK (local LLM reply): cyan
+Prayer: lavender
+GOD (LLM reply to prayer): violet
+
+6) UI Panels
+
+Top bar: Start / Pause(Resume) / Stop, Start & Max inputs, Model dropdown.
+(Dropdown disabled while running; DONG IDs reset on Start.)
+
+LLM: target base URL + model.
+
+INSPECTOR: compact; shows ID (e.g., DONG0011), active H, age, energy, fitness, and a single line of gene highlights.
+
+TERMINAL: chat only; wrapped & scrollable; input at bottom.
+In-world terminal flashes when a message hits.
+
+7) Logging
+
+Each run creates a tab-delimited log in Programs/:
+
+DONG-YYYYMMDD-HHMMSS.txt
+
+It includes:
+
+Timestamp, dong_id, age, energy, fitness, active_h
+All genes
+Full NN weights (W1, b1, W2, b2) flattened with column labels
+Log is finalized on Stop or when all creatures die.
+
+8) Tips & Tuning
+
+Fruit density: Food(max_items, respawn_sec) in evo.py.
+Exploration vs walls: adjust margins and explore bias in Bot.step.
+Breeding pace: session cap & cooldowns in Population.step.
+Chat vs Prayer bias: tweak how chat_int is computed (sociality/max_intel/explore_bias mix).
+Hidden growth speed: nn_growth gene effect & growth probability.
+
+9) Roadmap
+
+Multi-terminal worlds
+Richer object affordances
+Longer-term memory traces & reward shaping
+Screenshot / replay export buttons
+On-screen charts for population metrics
+
+10) License
+
+MIT (or your choice). Please set your preferred license file in the repo.
