@@ -10,6 +10,7 @@ def set_llm_target(base_url, model):
     _target["model"] = model
 
 def llm_rate_limits(min_interval_sec=6.0, burst=1):
+    """Simple throttle to avoid hammering local LLMs."""
     global _min_interval, _burst
     _min_interval = float(min_interval_sec)
     _burst = int(burst)
@@ -38,14 +39,14 @@ def llm_status_line():
     return "Status: LLM ready"
 
 def pack_reply(user_text: str) -> str:
-    """Short Dong-ish reply for terminal chats."""
+    """Short Dong-ish reply for chats/prayers."""
     if not _ok_to_call():
         return "« busy; please wait »"
 
     prompt = (
         "You translate between a human and tiny creatures called DONGS. "
         "Answer as a friendly Dong would, under 25 words, simple, playful.\n\n"
-        f"User: {user_text}\n"
+        f"Message: {user_text}\n"
         "Dong:"
     )
     body = json.dumps({"model": _target["model"], "prompt": prompt, "stream": False}).encode("utf-8")

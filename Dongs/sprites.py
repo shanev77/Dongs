@@ -21,9 +21,6 @@ DONG_SKIN       = (246,224,130)
 DONG_SKIN_OLD   = (210,190,115)
 DONG_BODY       = (52,120,200)
 DONG_BODY_OLD   = (46,100,165)
-DONG_OUTLINE    = (20,20,26)
-DONG_EYE        = (30,30,36)
-DONG_BLINK      = (20,20,26)
 DONG_WAIT       = (255,230,90)
 
 TOY_BALL_1 = (95,150,255)
@@ -55,21 +52,22 @@ def draw_world(screen: pygame.Surface, terrain):
         screen.fill(random.choice((GRASS_SP1, GRASS_SP2)), rect=(x,y,2,2))
 
     for x,y in terrain.trees:
-        pygame.draw.ellipse(screen, TREE_SH, (x-18, y-10, 36, 16))
+        pygame.draw.ellipse(screen, (18,26,30), (x-18, y-10, 36, 16))
         pygame.draw.rect(screen, TREE_TRUNK, (x-3, y-4, 6, 18), border_radius=2)
         pygame.draw.circle(screen, TREE_LEAF2, (x, y-10), 18)
         pygame.draw.circle(screen, TREE_LEAF1, (x-6, y-12), 14)
 
     for x,y in terrain.rocks:
-        pygame.draw.ellipse(screen, ROCK_SH, (x-10, y+2, 20, 8))
-        pygame.draw.circle(screen, ROCK, (x, y), 9)
-        pygame.draw.circle(screen, ROCK_HI, (x-3, y-2), 3)
+        pygame.draw.ellipse(screen, (50,60,70), (x-10, y+2, 20, 8))
+        pygame.draw.circle(screen, (100,110,120), (x, y), 9)
+        pygame.draw.circle(screen, (180,190,200), (x-3, y-2), 3)
 
 def draw_food(screen, food):
     for x,y,_ in food.items:
         pygame.draw.circle(screen, (190,240,175), (int(x), int(y)), 4)
 
 def _dong_palette_by_age(age: float, max_age: float):
+    # (kept simple tonal shift)
     t = min(1.0, max(0.0, age/max_age))
     def lerp(a,b,t): return tuple(int(a[i]+(b[i]-a[i])*t) for i in range(3))
     skin = lerp(DONG_SKIN, DONG_SKIN_OLD, t*0.8)
@@ -85,13 +83,15 @@ def draw_dong(screen, dong):
     bob = (1.0 if stepping else 0.3)*math.sin(walk_phase*2*math.pi)
     skin, body = _dong_palette_by_age(dong.age, dong.max_age)
 
-    if getattr(dong, "waiting_for_reply", False):
-        pygame.draw.circle(screen, (DONG_WAIT[0], DONG_WAIT[1], DONG_WAIT[2]), (x,y), 13, width=2)
+    if getattr(dong, "waiting_for_reply", False) or getattr(dong, "is_praying", False):
+        pygame.draw.circle(screen, DONG_WAIT, (x,y), 13, width=2)
 
+    # shadow
     pygame.draw.ellipse(screen, (18,22,26), (x-7, y+6, 14, 5))
+    # body
     by = y + int(1 - bob)
     pygame.draw.rect(screen, body, (x-6, by, 12, 8), border_radius=3)
-
+    # legs
     if stepping:
         leg_off = 2 if (walk_phase < 0.5) else -2
         pygame.draw.rect(screen, (18,22,26), (x-4, by+6, 2, 4), border_radius=1)
@@ -99,13 +99,13 @@ def draw_dong(screen, dong):
     else:
         pygame.draw.rect(screen, (18,22,26), (x-3, by+7, 2, 3), border_radius=1)
         pygame.draw.rect(screen, (18,22,26), (x+2, by+7, 2, 3), border_radius=1)
-
+    # head + ears
     hy = y - 6 - int(bob)
     pygame.draw.rect(screen, skin, (x-7, hy-6, 14, 12), border_radius=3)
     pygame.draw.rect(screen, (20,20,26), (x-7, hy-6, 14, 12), 1, border_radius=3)
     pygame.draw.rect(screen, skin, (x-10, hy-6, 4, 6), border_radius=2)
     pygame.draw.rect(screen, skin, (x+6,  hy-6, 4, 6), border_radius=2)
-
+    # eyes
     blink = ((int((pygame.time.get_ticks()/333) + (dong.id%13)*0.13) % 40) == 0)
     if blink:
         pygame.draw.rect(screen, (20,20,26), (x-3, hy-1, 2, 2))
@@ -115,7 +115,7 @@ def draw_dong(screen, dong):
         pygame.draw.circle(screen, (30,30,36), (x+3, hy-1), 2)
 
 def draw_bubble(screen, x,y, text_emoji:str):
-    pad=6; w=max(60, 14*len(text_emoji)+pad*2); h=24
+    pad=6; w=max(48, 14*len(text_emoji)+pad*2); h=24
     rect = pygame.Rect(int(x-w/2), int(y-34), w, h)
     pygame.draw.rect(screen, (24,28,36), rect, border_radius=8)
     pygame.draw.rect(screen, (70,90,120), rect, 2, border_radius=8)
