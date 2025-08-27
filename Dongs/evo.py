@@ -134,17 +134,19 @@ def crossover_mutate(rng, A,B, mut=0.05, sigma=0.06):
 class Genes:
     def __init__(self, rng):
         # core drives
-        self.max_intel   = float(rng.uniform(0.8, 1.3))
-        self.nn_growth   = float(rng.uniform(0.8, 1.2))
-        self.pref_eat    = float(rng.uniform(0.6, 1.4))
-        self.pref_play   = float(rng.uniform(0.6, 1.4))
-        self.pref_breed  = float(rng.uniform(0.6, 1.4))
-        self.explore_bias= float(rng.uniform(0.9, 1.4))
-        self.move_scalar = float(rng.uniform(0.90, 1.15))
+        self.max_intel     = float(rng.uniform(0.8, 1.3))
+        self.nn_growth     = float(rng.uniform(0.8, 1.2))
+        self.pref_eat      = float(rng.uniform(0.6, 1.4))
+        self.pref_play     = float(rng.uniform(0.6, 1.4))
+        self.pref_breed    = float(rng.uniform(0.6, 1.4))
+        self.explore_bias  = float(rng.uniform(0.9, 1.4))
+        self.move_scalar   = float(rng.uniform(0.90, 1.15))
         # social/rest/learning
-        self.sociality   = float(rng.uniform(0.7, 1.3))
-        self.rest_need   = float(rng.uniform(0.8, 1.2))
-        self.brain_plastic= float(rng.uniform(0.8, 1.3))
+        self.sociality     = float(rng.uniform(0.7, 1.3))
+        self.rest_need     = float(rng.uniform(0.8, 1.2))
+        self.brain_plastic = float(rng.uniform(0.8, 1.3))
+        # will to live / survival drive
+        self.survival_drive= float(rng.uniform(0.7, 1.3))
 
     def mix_with(self, other, rng, mut_sigma=0.03):
         """50/50 per-gene with mild mutation."""
@@ -189,6 +191,16 @@ class Bot:
         self.boredom = 0.0
         self.rest_until = 0.0
 
+        # terminal use limits
+        self.terminal_dock_since = 0.0
+        self.terminal_cooldown_until = 0.0
+
+        # social memory & boosts
+        self.affinity = {}              # other_id -> score
+        self.last_social_int = 0.0
+        self.recent_social_reward = 0.0 # decays during rest; boosts plasticity
+        self.last_gift_time = 0.0
+
         # exploration waypoint
         self.tx = self.rng.uniform(60, 1220)
         self.ty = self.rng.uniform(60, 660)
@@ -197,6 +209,19 @@ class Bot:
     @property
     def display_id(self) -> str:
         return f"DONG{self.id+1:04d}"
+
+    def compose_reply(self, user_text: str) -> str:
+        """Create a short 'donglish' utterance the LLM will translate."""
+        syll = ["do", "ng", "ka", "la", "mi", "bo", "ti", "ra", "su", "po"]
+        w = self.rng.randint(3, 5)
+        base = "".join(self.rng.choice(syll) for _ in range(w))
+        tags = []
+        if "food" in user_text.lower(): tags.append("nom")
+        if "play" in user_text.lower(): tags.append("pla")
+        if "friend" in user_text.lower(): tags.append("fri")
+        if "learn" in user_text.lower(): tags.append("lea")
+        if not tags: tags.append(self.rng.choice(["fri","pla","nom","lea"]))
+        return f"{base}-{tags[0]}~"
 
     def _maybe_new_target(self):
         if time.time() >= self.change_target_at or (abs(self.x-self.tx)+abs(self.y-self.ty) < 40):
@@ -215,32 +240,68 @@ class Bot:
         if now - self.last_rest_learn > 0.4:
             self.last_rest_learn = now
             w1,b1,w2,b2 = self.brain
-            noise = 0.005 * self.genes.brain_plastic
+            # Social interactions increase plasticity a little (decays here)
+            social_boost = 1.0 + min(1.0, self.recent_social_reward*0.5)
+            noise = 0.005 * self.genes.brain_plastic * social_boost
             w1[:self.active_h,:] += np.random.normal(0, noise, w1[:self.active_h,:].shape).astype(np.float32)
             b1[:self.active_h]   += np.random.normal(0, noise, b1[:self.active_h].shape).astype(np.float32)
             w2[:, :self.active_h]+= np.random.normal(0, noise, w2[:, :self.active_h].shape).astype(np.float32)
-            if self.active_h < H_MAX and self.rng.random() < 0.10 * self.genes.nn_growth:
+            if self.active_h < H_MAX and self.rng.random() < 0.10 * self.genes.nn_growth * social_boost:
                 self.active_h += 1
+            # decay recent reward
+            self.recent_social_reward *= 0.85
+        # Rest recovers energy, reduces boredom
         self.energy = min(10.0, self.energy + 0.01 * dt * 60)
         self.boredom = max(0.0, self.boredom - 0.02 * dt * 60)
+
+    def _read_peer_bubbles(self, neighbors, terminal):
+        """Read nearby bubbles to adjust affinity/targets/learning."""
+        for nb in neighbors:
+            if not nb.bubble: continue
+            if (nb.x-self.x)**2 + (nb.y-self.y)**2 > 44**2: 
+                continue
+            emo = nb.bubble
+            # Friendship / chat bubbles
+            if emo in ("🗨️","🤝","🎁","💞"):
+                self.affinity[nb.id] = self.affinity.get(nb.id,0.0) + 0.05
+                self.recent_social_reward += 0.1
+                # sometimes drift toward friendly peer
+                if random.random() < 0.2:
+                    self.tx, self.ty = nb.x, nb.y
+            # Rest bubble
+            if emo == "💤":
+                # mirrors restful mood: reduce boredom slightly
+                self.boredom = max(0.0, self.boredom - 0.1)
+            # Terminal/prayer bubbles nudge curiosity toward terminal
+            if emo in ("🖥️","🙏"):
+                if random.random() < 0.15:
+                    self.tx, self.ty = terminal.x, terminal.y
 
     def step(self, dt, terrain: Terrain, food, neighbors, terminal, toys):
         now = time.time()
 
-        # freeze states: chatting, praying, breeding, resting
+        # frozen states still AGE at half rate while motionless at terminal/prayer/breeding
         if self.waiting_for_reply or self.is_praying or now < self.breeding_until:
-            self.vx=self.vy=0.0; return
-        tired = self.energy < (3.2 * self.genes.rest_need)
+            self.age += dt * 0.5
+            self.vx=self.vy=0.0
+            return
+
+        # Will-to-live modulates rest threshold (more survival drive -> rest a bit sooner)
+        tired_threshold = 3.2 * self.genes.rest_need * (0.9 + 0.2*self.genes.survival_drive)
+        tired = self.energy < tired_threshold
         bored = self.boredom > 8.0
         if (tired or bored) and now < self.rest_until:
             self._rest_and_learn(dt)
+            self.age += dt  # normal age while resting
             self.vx=self.vy=0.0; return
         if (tired or bored) and now >= self.rest_until:
             self.rest_until = now + self.rng.uniform(1.6, 3.4)
             self.bubble="💤"; self.last_bubble_time=now
+            self.age += dt
             self.vx=self.vy=0.0; return
 
         self._maybe_new_target()
+        self._read_peer_bubbles(neighbors, terminal)
 
         # nearest food
         nf=None; nfd=1e9
@@ -257,11 +318,13 @@ class Bot:
             if d<pd2: pd2=d; peer=p
         px,py = (peer.x,peer.y) if peer else (self.x,self.y)
 
-        # inputs (10)
+        # inputs (10) with survival-aware food weighting
         Rf = 220.0; Rp = 220.0; Rt = 260.0
+        hunger_amp = 1.0 + self.genes.survival_drive * clamp((6.0 - self.energy)/6.0, 0.0, 1.0)
+        food_pref = self.genes.pref_eat * hunger_amp
         x = np.array([
-            (fx-self.x)/Rf * self.genes.pref_eat,
-            (fy-self.y)/Rf * self.genes.pref_eat,
+            (fx-self.x)/Rf * food_pref,
+            (fy-self.y)/Rf * food_pref,
             len(neighbors)/6.0,
             (px-self.x)/Rp,
             (py-self.y)/Rp,
@@ -280,6 +343,9 @@ class Bot:
         elif self.x > terrain.w-margin:repx = -(self.x - (terrain.w-margin)) * 0.020
         if self.y < margin:           repy = (margin - self.y) * 0.020
         elif self.y > terrain.h-margin:repy = -(self.y - (terrain.h-margin)) * 0.020
+        avoid_scale = 0.8 + 0.4*self.genes.survival_drive
+        repx *= avoid_scale; repy *= avoid_scale
+
         cx_pull = ((terrain.w*0.5 - self.x) / 420.0) * 0.9
         cy_pull = ((terrain.h*0.5 - self.y) / 420.0) * 0.9
         wx = (self.tx - self.x) / 260.0 * self.genes.explore_bias
@@ -296,6 +362,11 @@ class Bot:
         pray_int   = float(out[4]) * self.genes.max_intel
         rest_int   = float(out[5]) * self.genes.rest_need
 
+        # survival pressure slightly suppresses prayer if energy is low
+        pray_int *= (0.8 + 0.2*(self.energy/10.0))
+        pray_int *= (1.0 - 0.2*self.genes.survival_drive * clamp((6.0 - self.energy)/6.0, 0.0, 1.0))
+        self.last_social_int = social_int
+
         # movement
         spd = 54.0 * self.genes.move_scalar * terrain.speed_at(self.x, self.y)
         self.vx = ax * spd * dt; self.vy = ay * spd * dt
@@ -303,19 +374,38 @@ class Bot:
         if not terrain.is_water(nx, ny):
             self.x, self.y = nx, ny
 
-        # social interaction nearby
+        # social interaction nearby -> builds affinity and boosts later learning
         if neighbors and social_int > 0.55:
             peer = peer or self.rng.choice(neighbors)
             if (peer.x-self.x)**2 + (peer.y-self.y)**2 < 22**2:
                 self.bubble="🗨️"; self.last_bubble_time=now
                 self.fitness += 0.004 * self.genes.nn_growth
                 self.boredom = max(0.0, self.boredom - 0.6)
+                delta = 0.02 * max(0.3, social_int)
+                self.affinity[peer.id] = self.affinity.get(peer.id, 0.0) + delta
+                peer.affinity[self.id] = peer.affinity.get(self.id, 0.0) + delta
+                self.recent_social_reward += 0.2
+                peer.recent_social_reward += 0.2
+                if self.affinity[peer.id] > 0.8 and self.rng.random() < 0.1:
+                    self.bubble="🤝"; self.last_bubble_time=now
 
-        # toy play / carry
+        # toy play / carry + gifting to peers
+        nearest_peer = peer
         for it in getattr(toys, "items", []):
             dx,dy = it["x"]-self.x, it["y"]-self.y
             d2 = dx*dx + dy*dy
             if it["kind"] == "ball":
+                # gifting: pass a carried ball to a nearby peer
+                if it["carrier"] is self and nearest_peer and ((nearest_peer.x-self.x)**2 + (nearest_peer.y-self.y)**2) < 18**2:
+                    if (now - self.last_gift_time) > 4.0 and self.rng.random() < 0.06:
+                        it["carrier"] = nearest_peer
+                        self.last_gift_time = now
+                        self.affinity[nearest_peer.id] = self.affinity.get(nearest_peer.id, 0.0) + 0.35
+                        nearest_peer.affinity[self.id] = nearest_peer.affinity.get(self.id, 0.0) + 0.35
+                        self.bubble="🎁"; self.last_bubble_time=now
+                        nearest_peer.bubble="🎁"; nearest_peer.last_bubble_time=now
+                        self.recent_social_reward += 0.3; nearest_peer.recent_social_reward += 0.3
+
                 if it["carrier"] is self:
                     if self.energy < 5.0 and self.rng.random() < 0.02:
                         it["carrier"] = None
@@ -344,28 +434,29 @@ class Bot:
         if nfd < 16**2:
             for i,(fx2,fy2,_) in enumerate(list(food.items)):
                 if (fx2-self.x)**2 + (fy2-self.y)**2 < 16**2:
-                    self.energy = min(10.0, self.energy+2.2); food.items.pop(i); 
+                    self.energy = min(10.0, self.energy+2.2); food.items.pop(i)
                     self.boredom = max(0.0, self.boredom - 1.0)
                     break
 
-        self.age += dt; self.fitness = min(self.fitness + 0.001*self.genes.max_intel, 9999.0)
+        self.age += dt
+        self.fitness = min(self.fitness + 0.001*self.genes.max_intel, 9999.0)
         self.boredom = min(10.0, self.boredom + 0.002*60*dt)
 
         # ---- terminal decisions (one-at-a-time enforced by terminal.occupied_by) ----
         near_term = (self.x-terminal.x)**2 + (self.y-terminal.y)**2 < (terminal.radius+14)**2
-        if near_term and terminal.occupied_by is None and self.energy > 4.0:
+        if near_term and terminal.occupied_by is None and self.energy > 4.0 and time.time() >= self.terminal_cooldown_until:
             # Curiosity/user-chat vs prayer choice
             chat_int = social_int * self.genes.max_intel * 0.8 + 0.2*self.genes.explore_bias
             if chat_int > pray_int and self.rng.random() < 0.28:
-                # start a user chat (Dong initiates)
                 terminal.occupied_by = self
                 self.waiting_for_reply=True
                 self.docked_terminal=True
                 self.chat_started_at=time.time()
+                self.terminal_dock_since = self.chat_started_at
                 self.bubble="🖥️"; self.last_bubble_time=now
                 starters = [
-                    "hello user", "we are learning", "how are you?", "we found a pond",
-                    "do you have tips?", "we want to grow smarter", "we like to play"
+                    "hel-do fri~", "mi pla!~", "ra su po?", "ka bo ti~",
+                    "dong-dong lea?", "we wander~", "find nom?"
                 ]
                 self.outbox_msg = f"{self.display_id}: {self.rng.choice(starters)}"
                 return
@@ -373,18 +464,22 @@ class Bot:
         # dock for USER chat if the user just typed something
         if (not self.waiting_for_reply and not self.docked_terminal and
             getattr(terminal,"recent_msg_until",0) > now and
-            near_term and terminal.occupied_by is None and social_int > 0.6 and self.energy > 4.0):
+            near_term and terminal.occupied_by is None and social_int > 0.6 and self.energy > 4.0
+            and time.time() >= self.terminal_cooldown_until):
             terminal.occupied_by = self
             self.waiting_for_reply=True; self.docked_terminal=True
             self.chat_started_at=time.time()
+            self.terminal_dock_since = self.chat_started_at
             self.bubble="🖥️"; self.last_bubble_time=now
 
         # pray to LLM "God" (only near terminal and only if terminal free)
         if (not self.is_praying and not self.docked_terminal and
-            near_term and terminal.occupied_by is None and pray_int > 0.65 and self.energy > 4.5):
+            near_term and terminal.occupied_by is None and pray_int > 0.65 and self.energy > 4.5
+            and time.time() >= self.terminal_cooldown_until):
             terminal.occupied_by = self
             self.is_praying = True
             self.pending_prayer = self._make_prayer()
+            self.terminal_dock_since = time.time()
             self.bubble="🙏"; self.last_bubble_time=now
 
         # idle emotes
@@ -408,11 +503,13 @@ class Population:
         self.bots = []
         self.breeding_sessions = []
         self.bred_pairs = set()  # {(min_id,max_id)}
+        self.death_marks = []    # list of dicts: {"x":..,"y":..,"expire": step}
 
     def reset(self, max_pop=None):
         self.max_pop = max_pop or self.max_pop
         self.bots.clear(); self.breeding_sessions.clear()
         self.bred_pairs.clear()
+        self.death_marks.clear()
         Bot._idseq = 0
 
     def spawn(self, n=10):
@@ -426,12 +523,12 @@ class Population:
                     break
             self.bots.append(Bot(self.rng, x,y, brain, genes))
 
-    def step(self, dt, terrain: Terrain, food: Food, terminal, toys):
+    def step(self, dt, terrain: Terrain, food: Food, terminal, toys, nn_step: int):
         now = time.time()
 
         # complete breeding sessions -> produce 1-2 kids with 50/50 genes and NN
         done=[]
-        for sess in self.breeding_sessions:
+        for sess in list(self.breeding_sessions):
             a,b = sess["a"], sess["b"]
             a.breeding_until = sess["until"]; b.breeding_until = sess["until"]
             if now >= sess["until"]:
@@ -449,14 +546,16 @@ class Population:
                         kid.energy = 6.0; kid.fitness += 0.02
                         self.bots.append(kid)
                 done.append(sess)
-        for d in done: self.breeding_sessions.remove(d)
+        for d in done: 
+            if d in self.breeding_sessions:
+                self.breeding_sessions.remove(d)
 
         # step individuals
         for i,b in enumerate(self.bots):
             neighbors = [o for o in self.bots if o is not b and (o.x-b.x)**2+(o.y-b.y)**2 < 40**2]
             b.step(dt, terrain, food, neighbors, terminal, toys)
 
-        # restricted breeding: fewer sessions, 1–2 offspring per session, pair lockout
+        # restricted breeding: stricter, affinity-weighted, pair lockout
         if len(self.bots) < self.max_pop:
             order = list(range(len(self.bots))); self.rng.shuffle(order)
             used=set()
@@ -470,18 +569,37 @@ class Population:
                     pair_key = (min(a.id, c.id), max(a.id, c.id))
                     if pair_key in self.bred_pairs:  # already bred once together
                         continue
-                    if (a.x-c.x)**2+(a.y-c.y)**2 < 36**2 and len(self.breeding_sessions) < 4:
-                        n_children = self.rng.randint(1,2)   # 1 or 2 only
-                        dur = 2.4; until = time.time()+dur
-                        a.bubble="💞"; a.last_bubble_time=time.time()
-                        c.bubble="💞"; c.last_bubble_time=time.time()
-                        a.breeding_until=until; c.breeding_until=until
-                        self.breeding_sessions.append({"a":a,"b":c,"until":until,"n_children":n_children})
-                        self.bred_pairs.add(pair_key)  # lock this couple permanently
-                        used.add(i); used.add(j)
-                        break
+                    # nearby?
+                    if (a.x-c.x)**2+(a.y-c.y)**2 >= 36**2: 
+                        continue
+                    # social-affinity + capabilities gate (stricter)
+                    aff = 0.5*(a.affinity.get(c.id,0.0) + c.affinity.get(a.id,0.0))
+                    soc = 0.5*(a.last_social_int + c.last_social_int)
+                    skill = 0.02*(a.active_h + c.active_h) + 0.02*(a.fitness + c.fitness)
+                    will = 0.1*(a.genes.survival_drive + c.genes.survival_drive)
+                    score = 0.65*aff + 0.2*soc + skill + will
+                    if score < 1.05:
+                        continue
+                    if len(self.breeding_sessions) >= 4:
+                        continue
+                    # pair accepted
+                    n_children = self.rng.randint(1,2)
+                    dur = 2.4; until = time.time()+dur
+                    a.bubble="💞"; a.last_bubble_time=time.time()
+                    c.bubble="💞"; c.last_bubble_time=time.time()
+                    a.breeding_until=until; c.breeding_until=until
+                    self.breeding_sessions.append({"a":a,"b":c,"until":until,"n_children":n_children})
+                    self.bred_pairs.add(pair_key)
+                    used.add(i); used.add(j)
+                    break
 
-        # death and cleanup; release terminal if occupant died
-        self.bots[:] = [b for b in self.bots if (b.energy>0.0 and b.age < b.max_age)]
+        # death markers and cleanup
+        dead = [b for b in self.bots if (b.energy<=0.0 or b.age >= b.max_age)]
+        for b in dead:
+            self.death_marks.append({"x": b.x, "y": b.y, "expire": nn_step + 150})
+        self.bots[:] = [b for b in self.bots if b not in dead]
+        # release terminal if occupant died
         if terminal.occupied_by and terminal.occupied_by not in self.bots:
             terminal.occupied_by = None
+        # prune old crosses
+        self.death_marks[:] = [m for m in self.death_marks if m["expire"] > nn_step]

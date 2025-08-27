@@ -67,7 +67,6 @@ def draw_food(screen, food):
         pygame.draw.circle(screen, (190,240,175), (int(x), int(y)), 4)
 
 def _dong_palette_by_age(age: float, max_age: float):
-    # (kept simple tonal shift)
     t = min(1.0, max(0.0, age/max_age))
     def lerp(a,b,t): return tuple(int(a[i]+(b[i]-a[i])*t) for i in range(3))
     skin = lerp(DONG_SKIN, DONG_SKIN_OLD, t*0.8)
@@ -184,3 +183,14 @@ def draw_breeding_curtains(screen, sessions):
         pygame.draw.line(screen, (160,170,180), (rect.left, rect.top), (rect.right, rect.top), 2)
         pygame.draw.circle(screen, (220,200,100), (rect.left, rect.top), 3)
         pygame.draw.circle(screen, (220,200,100), (rect.right, rect.top), 3)
+
+def draw_death_markers(screen, markers, nn_step):
+    """Draw small black crosses where Dongs died; persist ~150 NN steps."""
+    for m in markers:
+        if m["expire"] <= nn_step:  # (kept but not drawn if expired; population prunes too)
+            continue
+        x, y = int(m["x"]), int(m["y"])
+        col = (10,10,12)
+        size = 8
+        pygame.draw.line(screen, col, (x-size, y), (x+size, y), 2)
+        pygame.draw.line(screen, col, (x, y-size), (x, y+size), 2)

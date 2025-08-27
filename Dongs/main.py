@@ -23,6 +23,10 @@ SCREEN_W, SCREEN_H = WORLD_W + UI_W, WORLD_H
 FPS_LIMIT   = 50
 STEP_SLOW   = 0.85
 
+# Terminal dwell/cooldown
+CHAT_DWELL_MAX = 12.0
+TERM_COOLDOWN_RANGE = (8.0, 16.0)
+
 llm_rate_limits(min_interval_sec=8.0, burst=1)
 
 def ui_font(sz=18): return pygame.font.SysFont("consolas", sz)
@@ -70,14 +74,12 @@ class TermLine:
 
 # --------- text wrapping for terminal ----------
 def _wrap_text(font, text, max_w):
-    """Return list of wrapped substrings that fit inside max_w."""
     if not text:
         return [""]
     out_lines=[]
     words = text.split(" ")
     cur = ""
     for w in words:
-        # split too-long words by chars
         if font.size(w)[0] > max_w:
             if cur:
                 out_lines.append(cur); cur=""
@@ -94,10 +96,8 @@ def _wrap_text(font, text, max_w):
         if font.size(trial)[0] <= max_w:
             cur = (cur + w + " ")
         else:
-            out_lines.append(cur.rstrip())
-            cur = w + " "
-    if cur:
-        out_lines.append(cur.rstrip())
+            out_lines.append(cur.rstrip()); cur = w + " "
+    if cur: out_lines.append(cur.rstrip())
     return out_lines or [""]
 
 def _wrap_term_lines(lines, font, max_w):
@@ -115,7 +115,7 @@ def main():
 
     rng = random.Random()
     terrain = Terrain(WORLD_W, WORLD_H, cell=20, rng=rng)
-    food    = Food(terrain, rng=rng, max_items=90, respawn_sec=4.0)   # near trees
+    food    = Food(terrain, rng=rng, max_items=90, respawn_sec=4.0)
     toys    = Toys(rng=rng, count=10)
     pop     = Population(terrain, rng=rng, max_pop=100)
 
@@ -166,12 +166,12 @@ def main():
     dd_open = False
     set_llm_target(AIHUB_URL, models[selected_model])
 
-    # Panels: LLM further down to give the dropdown more headroom
+    # Panels
     line_h = ui_font(16).get_height() + 2
     term_h = 270 - line_h
     insp_h = 130
-    llm_h  = 140 - (line_h)   # a bit shorter
-    gap_above_llm = line_h*2  -24# bigger gap between dropdown and LLM
+    llm_h  = 140 - (line_h)
+    gap_above_llm = line_h*2  -24
 
     term_panel = pygame.Rect(content_x, SCREEN_H - PAD - term_h, content_w, term_h)
     insp_panel = pygame.Rect(content_x, term_panel.y - 10 - insp_h, content_w, insp_h)
@@ -206,6 +206,7 @@ def main():
             "timestamp","dong_id","age","energy","fitness",
             "gene_max_intel","gene_nn_growth","gene_pref_eat","gene_pref_play","gene_pref_breed",
             "gene_explore_bias","gene_move_scalar","gene_sociality","gene_rest_need","gene_brain_plastic",
+            "gene_survival_drive",
             "active_h"
         ]
         from evo import IN_SIZE, H_MAX, OUT_SIZE
@@ -228,6 +229,7 @@ def main():
                 f"{b.genes.pref_eat:.3f}", f"{b.genes.pref_play:.3f}", f"{b.genes.pref_breed:.3f}",
                 f"{b.genes.explore_bias:.3f}", f"{b.genes.move_scalar:.3f}",
                 f"{b.genes.sociality:.3f}", f"{b.genes.rest_need:.3f}", f"{b.genes.brain_plastic:.3f}",
+                f"{b.genes.survival_drive:.3f}",
                 str(b.active_h)
             ]
             row += [f"{float(x):.4f}" for x in w1.flatten()]
@@ -287,9 +289,23 @@ def main():
         if term_block.occupied_by and getattr(term_block.occupied_by, "waiting_for_reply", False):
             d = term_block.occupied_by
             if getattr(d, "outbox_msg", None):
+                # The Dong's own utterance (donglish)
                 term_lines.append(TermLine(d.outbox_msg, TermLine.DONG))
+                # Translation to English by PACK (LLM)
+                translated = pack_reply(d.outbox_msg)
+                term_lines.append(TermLine(f"📘 {translated}", TermLine.PACK))
                 d.outbox_msg = None
                 term_block.flash_until = pygame.time.get_ticks()/1000.0 + 0.6
+
+            # chat dwell timeout — if no user response in time, wander off
+            if time.time() - d.terminal_dock_since > CHAT_DWELL_MAX:
+                term_lines.append(TermLine(f"{d.display_id}: (wanders off)", TermLine.DONG))
+                d.waiting_for_reply = False
+                d.docked_terminal = False
+                d.boredom = min(10.0, d.boredom + 0.6)
+                d.terminal_cooldown_until = time.time() + random.uniform(*TERM_COOLDOWN_RANGE)
+                d.bubble = "…"; d.last_bubble_time = time.time()
+                term_block.occupied_by = None
 
         # handle pending prayer conversation (if any)
         if term_block.occupied_by and getattr(term_block.occupied_by, "is_praying", False):
@@ -297,8 +313,8 @@ def main():
             if d.pending_prayer:  # send once
                 prayer_text = d.pending_prayer
                 d.pending_prayer = None
-                # Print exactly "DONGXXXX prays: ..."
                 term_lines.append(TermLine(prayer_text, TermLine.PRAYER))
+                # GOD LLM replies only to prayer (after ~30s)
                 def prayer_thread(dong, text):
                     start = time.time()
                     reply = pack_reply(text)
@@ -308,6 +324,7 @@ def main():
                     term_lines.append(TermLine(f"GOD≪ {reply}", TermLine.GOD))
                     dong.is_praying = False
                     dong.bubble = "✨"; dong.last_bubble_time = time.time()
+                    dong.terminal_cooldown_until = time.time() + random.uniform(*TERM_COOLDOWN_RANGE)
                     term_block.occupied_by = None
                 threading.Thread(target=prayer_thread, args=(d, prayer_text), daemon=True).start()
 
@@ -390,22 +407,26 @@ def main():
                     elif ev.key == pygame.K_RETURN:
                         msg = term_input.strip(); term_input=""
                         if msg:
+                            # User lines ONLY go to terminal; GOD doesn't respond here.
                             term_lines.append(TermLine(f"> {msg}", TermLine.USER))
                             term_block.flash_until = pygame.time.get_ticks()/1000.0 + 0.9
-                            term_block.recent_msg_until = time.time() + 6.0  # signal for dongs
+                            term_block.recent_msg_until = time.time() + 6.0
                             term_scroll = 0
-                            # reply only if a dong docked for user chat
+                            # If a Dong is docked & waiting, THE DONG replies (LLM only translates it)
                             if term_block.occupied_by and getattr(term_block.occupied_by, "waiting_for_reply", False):
-                                def respond():
-                                    reply = pack_reply(msg)
-                                    term_lines.append(TermLine(f"PACK≫ {reply}", TermLine.PACK))
+                                def dong_reply():
                                     d = term_block.occupied_by
-                                    if d:
-                                        d.waiting_for_reply = False
-                                        d.docked_terminal = False
-                                        d.fitness += 0.03
-                                        term_block.occupied_by = None
-                                threading.Thread(target=respond, daemon=True).start()
+                                    if not d: return
+                                    donglish = d.compose_reply(msg)
+                                    term_lines.append(TermLine(f"{d.display_id}: {donglish}", TermLine.DONG))
+                                    translated = pack_reply(donglish)  # translate donglish -> English
+                                    term_lines.append(TermLine(f"📘≫ {translated}", TermLine.PACK))
+                                    d.waiting_for_reply = False
+                                    d.docked_terminal = False
+                                    d.fitness += 0.03
+                                    d.terminal_cooldown_until = time.time() + random.uniform(*TERM_COOLDOWN_RANGE)
+                                    term_block.occupied_by = None
+                                threading.Thread(target=dong_reply, daemon=True).start()
                     else:
                         if ev.unicode and 32 <= ord(ev.unicode) < 127:
                             term_input += ev.unicode
@@ -414,7 +435,7 @@ def main():
         if running_sim and not paused:
             food.update()
             toys.update(dt)
-            pop.step(dt, terrain, food, term_block, toys)
+            pop.step(dt, terrain, food, term_block, toys, nn_steps)
             nn_steps += 1
 
             # keep in-bounds & bounce off water edge
@@ -444,6 +465,7 @@ def main():
         sprites.draw_terminal_block(screen, term_block)
         sprites.draw_food(screen, food)
         sprites.draw_breeding_curtains(screen, pop.breeding_sessions)
+        sprites.draw_death_markers(screen, pop.death_marks, nn_steps)
         for b in pop.bots:
             sprites.draw_dong(screen, b)
             if getattr(b, "bubble", None) and (time.time() - getattr(b, "last_bubble_time", 0) < 2.0):
@@ -466,9 +488,6 @@ def main():
         draw_entry(screen, entry_start, start_count_txt)
         screen.blit(ui_font(18).render("Max:",   True, (210,220,230)), (col2_x, inputs_y+8))
         draw_entry(screen, entry_max,   max_pop_txt)
-
-        # Row 3 dropdown
-        # draw_dropdown(screen, dd_rect, models, selected_model, dd_open, enabled=(not running_sim))
 
         # LLM panel
         pygame.draw.rect(screen, (20,24,30), llm_panel, border_radius=8)
@@ -497,7 +516,7 @@ def main():
                     f"{nearest.display_id}  H:{nearest.active_h}/{H_MAX}",
                     f"Age:{nearest.age:.0f}/{nearest.max_age:.0f}  E:{nearest.energy:.2f}  Fit:{nearest.fitness:.3f}",
                     f"Eat:{g.pref_eat:.2f} Play:{g.pref_play:.2f} Breed:{g.pref_breed:.2f} Explr:{g.explore_bias:.2f}",
-                    f"Move:{g.move_scalar:.2f} Soc:{g.sociality:.2f} Rest:{g.rest_need:.2f} Plast:{g.brain_plastic:.2f}"
+                    f"Move:{g.move_scalar:.2f} Soc:{g.sociality:.2f} Rest:{g.rest_need:.2f} Plast:{g.brain_plastic:.2f} Will:{g.survival_drive:.2f}"
                 ]
         wrect = pygame.Rect(insp_panel.x+6, insp_panel.y+28, insp_panel.w-12, insp_panel.h-36)
         y = wrect.y
@@ -506,6 +525,7 @@ def main():
             screen.blit(ui_font(16).render(raw, True, (220,230,245)), (wrect.x, y))
             y += ui_font(16).get_height()+2
 
+        # Draw dropdown LAST so it overlays panels when open
         draw_dropdown(screen, dd_rect, models, selected_model, dd_open, enabled=(not running_sim))
 
         # Terminal (wrapped text + colors)
@@ -522,11 +542,11 @@ def main():
             end   = max(0, len(wrapped) - term_scroll)
             y = term_panel.y + 30
             for tl in wrapped[start:end]:
-                if tl.kind == TermLine.USER:   col = (235,235,240)
-                elif tl.kind == TermLine.PACK: col = (140,200,255)
-                elif tl.kind == TermLine.PRAYER: col = (190,170,255)
-                elif tl.kind == TermLine.DONG: col = (120,220,200)  # teal: dong-initiated message
-                else: col = (160,140,255)  # GOD
+                if tl.kind == TermLine.USER:     col = (235,235,240)   # user
+                elif tl.kind == TermLine.PACK:   col = (140,200,255)   # translation (cyan)
+                elif tl.kind == TermLine.PRAYER: col = (190,170,255)   # prayer
+                elif tl.kind == TermLine.DONG:   col = (120,220,200)   # dong utterance (teal)
+                else:                             col = (160,140,255)   # GOD reply (prayer only)
                 screen.blit(font16.render(tl.text, True, col), (term_panel.x+6, y))
                 y += font16.get_height()+2
 

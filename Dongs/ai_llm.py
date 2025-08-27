@@ -39,15 +39,16 @@ def llm_status_line():
     return "Status: LLM ready"
 
 def pack_reply(user_text: str) -> str:
-    """Short Dong-ish reply for chats/prayers."""
+    """Short Dong-ish English translation or reply."""
     if not _ok_to_call():
         return "« busy; please wait »"
 
     prompt = (
-        "You translate between a human and tiny creatures called DONGS. "
-        "Answer as a friendly Dong would, under 25 words, simple, playful.\n\n"
+        "You translate/voice tiny creatures called DONGS.\n"
+        "Write a friendly, simple line UNDER 25 words addressing the human.\n"
+        "Input may be donglish (nonsense syllables); respond as clear English a Dong would say.\n\n"
         f"Message: {user_text}\n"
-        "Dong:"
+        "Dong (English):"
     )
     body = json.dumps({"model": _target["model"], "prompt": prompt, "stream": False}).encode("utf-8")
     req = urllib.request.Request(f"{_target['base_url']}/api/generate", data=body, headers={"Content-Type":"application/json"})
