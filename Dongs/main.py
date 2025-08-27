@@ -1,7 +1,7 @@
 import os, sys, json, math, time, random, threading
 import pygame
 
-from evo import Terrain, Food, Population, Toys
+from evo import Terrain, Food, Population, Toys, H_MAX
 import sprites
 from ai_llm import get_models, set_llm_target, llm_status_line, llm_rate_limits, pack_reply
 
@@ -22,6 +22,10 @@ SCREEN_W, SCREEN_H = WORLD_W + UI_W, WORLD_H
 
 FPS_LIMIT   = 50
 STEP_SLOW   = 0.85
+
+# Terminal dwell/cooldown
+CHAT_DWELL_MAX = 12.0
+TERM_COOLDOWN_RANGE = (8.0, 16.0)
 
 llm_rate_limits(min_interval_sec=8.0, burst=1)
 
@@ -62,10 +66,46 @@ def draw_dropdown(surf, r, items, idx, open_, enabled=True):
 
 def clamp(v, lo, hi): return lo if v<lo else (hi if v>hi else v)
 
+# Terminal line kinds -> colors
 class TermLine:
-    USER="user"; PACK="pack"
+    USER="user"; PACK="pack"; PRAYER="prayer"; GOD="god"; DONG="dong"
     def __init__(self, text, kind):
         self.text=text; self.kind=kind
+
+# --------- text wrapping for terminal ----------
+def _wrap_text(font, text, max_w):
+    if not text:
+        return [""]
+    out_lines=[]
+    words = text.split(" ")
+    cur = ""
+    for w in words:
+        if font.size(w)[0] > max_w:
+            if cur:
+                out_lines.append(cur); cur=""
+            chunk=""
+            for ch in w:
+                if font.size(chunk + ch)[0] <= max_w:
+                    chunk += ch
+                else:
+                    out_lines.append(chunk)
+                    chunk = ch
+            cur = chunk + " "
+            continue
+        trial = (cur + w + " ").rstrip()
+        if font.size(trial)[0] <= max_w:
+            cur = (cur + w + " ")
+        else:
+            out_lines.append(cur.rstrip()); cur = w + " "
+    if cur: out_lines.append(cur.rstrip())
+    return out_lines or [""]
+
+def _wrap_term_lines(lines, font, max_w):
+    wrapped=[]
+    for tl in lines:
+        for s in _wrap_text(font, tl.text, max_w):
+            wrapped.append(TermLine(s, tl.kind))
+    return wrapped
 
 def main():
     pygame.init()
@@ -75,38 +115,49 @@ def main():
 
     rng = random.Random()
     terrain = Terrain(WORLD_W, WORLD_H, cell=20, rng=rng)
-    food    = Food(rng=rng, max_items=90, respawn_sec=4.0)
+    food    = Food(terrain, rng=rng, max_items=90, respawn_sec=4.0)
     toys    = Toys(rng=rng, count=10)
     pop     = Population(terrain, rng=rng, max_pop=100)
 
     world_static = pygame.Surface((WORLD_W, WORLD_H)).convert()
     sprites.draw_world(world_static, terrain)
 
+    # in-world terminal block
     term_block = type("T", (), {})()
     term_block.x = terrain.gw*terrain.cell//2
     term_block.y = WORLD_H//2
     term_block.radius = 22
     term_block.occupied_by = None
     term_block.flash_until = 0.0
+    term_block.recent_msg_until = 0.0
 
     # ---------- Right UI ----------
     PAD = 12
-    ui_x  = WORLD_W + PAD
+    content_x  = WORLD_W + PAD
+    content_w  = UI_W - 2*PAD
     top_y = PAD
 
-    btn_start  = pygame.Rect(ui_x, top_y, 92, 34)
+    # Row 1: Buttons
+    btn_start  = pygame.Rect(content_x, top_y, 92, 34)
     btn_pause  = pygame.Rect(btn_start.right + 10, top_y, 92, 34)
     btn_stop   = pygame.Rect(btn_pause.right + 10, top_y, 92, 34)
 
-    label_s = ui_font(18).render("Start:", True, (210,220,230))
-    label_m = ui_font(18).render("Max:",   True, (210,220,230))
-
-    entry_start = pygame.Rect(btn_stop.right + 20 + label_s.get_width(), top_y, 68, 34)
-    entry_max   = pygame.Rect(entry_start.right + 28 + label_m.get_width(), top_y, 68, 34)
-
+    # Row 2: Inputs (two columns)
+    entry_h  = 34
+    gutter   = 12
+    col_w    = (content_w - gutter) // 2
+    inputs_y = btn_start.bottom + 8
+    col1_x = content_x
+    col2_x = content_x + col_w + gutter
+    entry_w_start = 68
+    entry_w_max   = 68
+    entry_start = pygame.Rect(col1_x + col_w - entry_w_start, inputs_y, entry_w_start, entry_h)
+    entry_max   = pygame.Rect(col2_x + col_w - entry_w_max,   inputs_y, entry_w_max,   entry_h)
     start_count_txt, max_pop_txt = "25", "100"; which_edit = None
 
-    dd_rect = pygame.Rect(ui_x, btn_start.bottom+12, UI_W - 2*PAD, 34)
+    # Row 3: Dropdown below inputs
+    dd_y    = entry_start.bottom + 8
+    dd_rect = pygame.Rect(content_x, dd_y, content_w, 34)
     try:
         models = get_models(AIHUB_URL) or [DEFAULT_MOD]
     except Exception:
@@ -115,13 +166,16 @@ def main():
     dd_open = False
     set_llm_target(AIHUB_URL, models[selected_model])
 
-    # Panels — shorten LLM panel ~half so dropdown fits comfortably
-    term_h = 270
+    # Panels
+    line_h = ui_font(16).get_height() + 2
+    term_h = 270 - line_h
     insp_h = 130
-    llm_h  = 150  # ↓ fixed shorter height
-    term_panel = pygame.Rect(WORLD_W + PAD, SCREEN_H - PAD - term_h, UI_W-2*PAD, term_h)
-    insp_panel = pygame.Rect(WORLD_W + PAD, term_panel.y - 10 - insp_h, UI_W-2*PAD, insp_h)
-    llm_panel  = pygame.Rect(WORLD_W + PAD, insp_panel.y - 10 - llm_h, UI_W-2*PAD, llm_h)
+    llm_h  = 140 - (line_h)
+    gap_above_llm = line_h*2  -24
+
+    term_panel = pygame.Rect(content_x, SCREEN_H - PAD - term_h, content_w, term_h)
+    insp_panel = pygame.Rect(content_x, term_panel.y - 10 - insp_h, content_w, insp_h)
+    llm_panel  = pygame.Rect(content_x, insp_panel.y - gap_above_llm - llm_h,  content_w, llm_h)
 
     term_input = ""; term_has_focus = False
     term_lines: list[TermLine] = []
@@ -150,16 +204,21 @@ def main():
         last_log_t = 0.0
         header = [
             "timestamp","dong_id","age","energy","fitness",
-            "gene_max_intel","gene_nn_growth","gene_pref_eat","gene_pref_play","gene_pref_breed","gene_explore_bias","gene_move_scalar"
+            "gene_max_intel","gene_nn_growth","gene_pref_eat","gene_pref_play","gene_pref_breed",
+            "gene_explore_bias","gene_move_scalar","gene_sociality","gene_rest_need","gene_brain_plastic",
+            "gene_survival_drive",
+            "active_h"
         ]
+        from evo import IN_SIZE, H_MAX, OUT_SIZE
         def labels(prefix, shape):
             if len(shape)==2:
                 return [f"{prefix}_{i}_{j}" for i in range(shape[0]) for j in range(shape[1])]
             return [f"{prefix}_{i}" for i in range(shape[0])]
-        header += labels("w1",(8,4)) + labels("b1",(8,)) + labels("w2",(2,8)) + labels("b2",(2,))
+        header += labels("w1",(H_MAX,IN_SIZE)) + labels("b1",(H_MAX,)) + labels("w2",(OUT_SIZE,H_MAX)) + labels("b2",(OUT_SIZE,))
         log_rows.append("\t".join(header))
 
     def append_snapshot(tnow: float):
+        from evo import IN_SIZE, H_MAX, OUT_SIZE
         for b in pop.bots:
             w1,b1,w2,b2 = b.brain
             row = [
@@ -168,7 +227,10 @@ def main():
                 f"{b.age:.2f}", f"{b.energy:.2f}", f"{b.fitness:.3f}",
                 f"{b.genes.max_intel:.3f}", f"{b.genes.nn_growth:.3f}",
                 f"{b.genes.pref_eat:.3f}", f"{b.genes.pref_play:.3f}", f"{b.genes.pref_breed:.3f}",
-                f"{b.genes.explore_bias:.3f}", f"{b.genes.move_scalar:.3f}"
+                f"{b.genes.explore_bias:.3f}", f"{b.genes.move_scalar:.3f}",
+                f"{b.genes.sociality:.3f}", f"{b.genes.rest_need:.3f}", f"{b.genes.brain_plastic:.3f}",
+                f"{b.genes.survival_drive:.3f}",
+                str(b.active_h)
             ]
             row += [f"{float(x):.4f}" for x in w1.flatten()]
             row += [f"{float(x):.4f}" for x in b1.flatten()]
@@ -207,24 +269,13 @@ def main():
         if not dd_open or not models: return None
         return pygame.Rect(dd_rect.x, dd_rect.bottom+4, dd_rect.w, min(260, 26*len(models)+10))
 
-    def attract_curious_dong(_user_msg: str) -> bool:
-        if term_block.occupied_by: return True
-        candid = [(b, (b.x-term_block.x)**2 + (b.y-term_block.y)**2) for b in pop.bots]
-        candid = [c for c in candid if c[1] < 220**2]
-        if not candid: return False
-        candid.sort(key=lambda t:t[1])
-        for b,_ in candid[:8]:
-            if rng.random() < 0.65:
-                term_block.occupied_by = b
-                b.waiting_for_reply = True
-                b.docked_terminal = True
-                b.fitness += 0.01
-                return True
-        return False
-
-    def lines_fit():
+    def lines_fit_term():
         fh = ui_font(16).get_height()+2
         return max(3, (term_panel.h - 78)//fh)
+
+    def lines_fit_insp():
+        fh = ui_font(16).get_height()+2
+        return max(2, (insp_panel.h - 36)//fh)
 
     running = True
     while running:
@@ -234,6 +285,49 @@ def main():
         else:
             dt = 0.0
 
+        # If a Dong initiated user-chat, post its opening line once it docks
+        if term_block.occupied_by and getattr(term_block.occupied_by, "waiting_for_reply", False):
+            d = term_block.occupied_by
+            if getattr(d, "outbox_msg", None):
+                # The Dong's own utterance (donglish)
+                term_lines.append(TermLine(d.outbox_msg, TermLine.DONG))
+                # Translation to English by PACK (LLM)
+                translated = pack_reply(d.outbox_msg)
+                term_lines.append(TermLine(f"📘 {translated}", TermLine.PACK))
+                d.outbox_msg = None
+                term_block.flash_until = pygame.time.get_ticks()/1000.0 + 0.6
+
+            # chat dwell timeout — if no user response in time, wander off
+            if time.time() - d.terminal_dock_since > CHAT_DWELL_MAX:
+                term_lines.append(TermLine(f"{d.display_id}: (wanders off)", TermLine.DONG))
+                d.waiting_for_reply = False
+                d.docked_terminal = False
+                d.boredom = min(10.0, d.boredom + 0.6)
+                d.terminal_cooldown_until = time.time() + random.uniform(*TERM_COOLDOWN_RANGE)
+                d.bubble = "…"; d.last_bubble_time = time.time()
+                term_block.occupied_by = None
+
+        # handle pending prayer conversation (if any)
+        if term_block.occupied_by and getattr(term_block.occupied_by, "is_praying", False):
+            d = term_block.occupied_by
+            if d.pending_prayer:  # send once
+                prayer_text = d.pending_prayer
+                d.pending_prayer = None
+                term_lines.append(TermLine(prayer_text, TermLine.PRAYER))
+                # GOD LLM replies only to prayer (after ~30s)
+                def prayer_thread(dong, text):
+                    start = time.time()
+                    reply = pack_reply(text)
+                    remain = 30.0 - (time.time() - start)
+                    if remain > 0:
+                        time.sleep(remain)
+                    term_lines.append(TermLine(f"GOD≪ {reply}", TermLine.GOD))
+                    dong.is_praying = False
+                    dong.bubble = "✨"; dong.last_bubble_time = time.time()
+                    dong.terminal_cooldown_until = time.time() + random.uniform(*TERM_COOLDOWN_RANGE)
+                    term_block.occupied_by = None
+                threading.Thread(target=prayer_thread, args=(d, prayer_text), daemon=True).start()
+
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
                 if running_sim: write_log("quit")
@@ -241,14 +335,18 @@ def main():
 
             elif ev.type == pygame.MOUSEWHEEL:
                 if term_panel.collidepoint(pygame.mouse.get_pos()):
-                    term_scroll = max(0, min(term_scroll - ev.y, max(0, len(term_lines) - lines_fit())))
+                    font16 = ui_font(16)
+                    wrap_w = term_panel.w - 12
+                    wrapped = _wrap_term_lines(term_lines, font16, wrap_w)
+                    term_scroll = max(0, min(term_scroll - ev.y,
+                                             max(0, len(wrapped) - lines_fit_term())))
 
             elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
-                if btn_start.collidepoint(ev.pos): 
+                if btn_start.collidepoint(ev.pos):
                     start_sim()
                 elif btn_pause.collidepoint(ev.pos) and running_sim:
                     paused = not paused
-                elif btn_stop.collidepoint(ev.pos):  
+                elif btn_stop.collidepoint(ev.pos):
                     stop_sim()
                 elif dd_rect.collidepoint(ev.pos) and (not running_sim):
                     dd_open = not dd_open
@@ -262,6 +360,7 @@ def main():
                         dd_open = False
                     else:
                         dd_open = False
+                        # focus handling
                         if entry_start.collidepoint(ev.pos):
                             which_edit, term_has_focus = "start", False
                         elif entry_max.collidepoint(ev.pos):
@@ -270,6 +369,7 @@ def main():
                             which_edit, term_has_focus = None, True
                         else:
                             which_edit, term_has_focus = None, False
+                        # drag while paused
                         if paused and 0 <= ev.pos[0] < WORLD_W and 0 <= ev.pos[1] < WORLD_H:
                             nearest=None; best=24**2
                             for b in pop.bots:
@@ -307,22 +407,26 @@ def main():
                     elif ev.key == pygame.K_RETURN:
                         msg = term_input.strip(); term_input=""
                         if msg:
+                            # User lines ONLY go to terminal; GOD doesn't respond here.
                             term_lines.append(TermLine(f"> {msg}", TermLine.USER))
                             term_block.flash_until = pygame.time.get_ticks()/1000.0 + 0.9
+                            term_block.recent_msg_until = time.time() + 6.0
                             term_scroll = 0
-                            def respond():
-                                # pull a Dong if possible; otherwise still reply
-                                if not term_block.occupied_by:
-                                    attract_curious_dong(msg)
-                                reply = pack_reply(msg)
-                                term_lines.append(TermLine(f"PACK≫ {reply}", TermLine.PACK))
-                                if term_block.occupied_by:
+                            # If a Dong is docked & waiting, THE DONG replies (LLM only translates it)
+                            if term_block.occupied_by and getattr(term_block.occupied_by, "waiting_for_reply", False):
+                                def dong_reply():
                                     d = term_block.occupied_by
+                                    if not d: return
+                                    donglish = d.compose_reply(msg)
+                                    term_lines.append(TermLine(f"{d.display_id}: {donglish}", TermLine.DONG))
+                                    translated = pack_reply(donglish)  # translate donglish -> English
+                                    term_lines.append(TermLine(f"📘≫ {translated}", TermLine.PACK))
                                     d.waiting_for_reply = False
                                     d.docked_terminal = False
                                     d.fitness += 0.03
+                                    d.terminal_cooldown_until = time.time() + random.uniform(*TERM_COOLDOWN_RANGE)
                                     term_block.occupied_by = None
-                            threading.Thread(target=respond, daemon=True).start()
+                                threading.Thread(target=dong_reply, daemon=True).start()
                     else:
                         if ev.unicode and 32 <= ord(ev.unicode) < 127:
                             term_input += ev.unicode
@@ -331,7 +435,7 @@ def main():
         if running_sim and not paused:
             food.update()
             toys.update(dt)
-            pop.step(dt, terrain, food, term_block, toys)
+            pop.step(dt, terrain, food, term_block, toys, nn_steps)
             nn_steps += 1
 
             # keep in-bounds & bounce off water edge
@@ -361,29 +465,31 @@ def main():
         sprites.draw_terminal_block(screen, term_block)
         sprites.draw_food(screen, food)
         sprites.draw_breeding_curtains(screen, pop.breeding_sessions)
+        sprites.draw_death_markers(screen, pop.death_marks, nn_steps)
         for b in pop.bots:
             sprites.draw_dong(screen, b)
             if getattr(b, "bubble", None) and (time.time() - getattr(b, "last_bubble_time", 0) < 2.0):
                 sprites.draw_bubble(screen, b.x, b.y, f"{b.bubble}")
 
+        # HUD
         screen.blit(ui_font(20).render(f"Dongs: {len(pop.bots)}/{pop.max_pop}", True, (240,240,240)), (10,8))
         screen.blit(ui_font(20).render(f"NN steps: {nn_steps:,}", True, (210,220,210)), (10,34))
 
+        # Sidebar bg
         pygame.draw.rect(screen, (16,20,26), (WORLD_W, 0, UI_W, SCREEN_H))
 
+        # Row 1 buttons
         draw_button(screen, btn_start, "Start", not running_sim)
         draw_button(screen, btn_pause, ("Resume" if paused else "Pause"), running_sim)
         draw_button(screen, btn_stop,  "Stop",  running_sim)
-        screen.blit(ui_font(18).render("Start:", True, (210,220,230)),
-                    (entry_start.x - ui_font(18).size("Start:")[0] - 8, entry_start.y+8))
+
+        # Row 2 inputs
+        screen.blit(ui_font(18).render("Start:", True, (210,220,230)), (col1_x, inputs_y+8))
         draw_entry(screen, entry_start, start_count_txt)
-        screen.blit(ui_font(18).render("Max:", True, (210,220,230)),
-                    (entry_max.x - ui_font(18).size("Max:")[0] - 8, entry_max.y+8))
-        draw_entry(screen, entry_max, max_pop_txt)
+        screen.blit(ui_font(18).render("Max:",   True, (210,220,230)), (col2_x, inputs_y+8))
+        draw_entry(screen, entry_max,   max_pop_txt)
 
-        draw_dropdown(screen, dd_rect, models, selected_model, dd_open, enabled=(not running_sim))
-
-        # LLM panel (shorter)
+        # LLM panel
         pygame.draw.rect(screen, (20,24,30), llm_panel, border_radius=8)
         pygame.draw.rect(screen, (70,90,120), llm_panel, 2, border_radius=8)
         screen.blit(ui_font(18).render("LLM", True, (220,240,255)), (llm_panel.x+8, llm_panel.y+6))
@@ -393,50 +499,56 @@ def main():
             screen.blit(ui_font(16).render(line, True, (220,230,245)), (sx, sy))
             sy += ui_font(16).get_height()+2
 
-        # INSPECTOR
+        # INSPECTOR (condensed)
         pygame.draw.rect(screen, (20,24,30), insp_panel, border_radius=8)
         pygame.draw.rect(screen, (70,90,120), insp_panel, 2, border_radius=8)
         screen.blit(ui_font(18).render("INSPECTOR", True, (220,240,255)), (insp_panel.x+8, insp_panel.y+6))
         mx,my = pygame.mouse.get_pos()
-        hover_txt = "Move cursor over a Dong to inspect."
+        lines = ["Move cursor over a Dong to inspect."]
         if 0 <= mx < WORLD_W and 0 <= my < WORLD_H:
             nearest=None; best=26**2
             for b in pop.bots:
                 d=(b.x-mx)**2+(b.y-my)**2
                 if d<best: nearest=b; best=d
             if nearest and best < 26**2:
-                w1,b1,w2,b2 = nearest.brain
-                hover_txt = (
-                    f"{nearest.display_id}\n"
-                    f"Age: {nearest.age:.1f}/{nearest.max_age:.1f}\n"
-                    f"Energy: {nearest.energy:.2f}  Fit: {nearest.fitness:.3f}\n"
-                    f"Genes: maxInt={nearest.genes.max_intel:.2f} "
-                    f"nnGrow={nearest.genes.nn_growth:.2f} eat={nearest.genes.pref_eat:.2f} "
-                    f"play={nearest.genes.pref_play:.2f} breed={nearest.genes.pref_breed:.2f} "
-                    f"explore={nearest.genes.explore_bias:.2f} move={nearest.genes.move_scalar:.2f}\n"
-                    f"NN: w1 μ={float(w1.mean()):.2f} σ={float(w1.std()):.2f} | "
-                    f"w2 μ={float(w2.mean()):.2f} σ={float(w2.std()):.2f}"
-                )
+                g = nearest.genes
+                lines = [
+                    f"{nearest.display_id}  H:{nearest.active_h}/{H_MAX}",
+                    f"Age:{nearest.age:.0f}/{nearest.max_age:.0f}  E:{nearest.energy:.2f}  Fit:{nearest.fitness:.3f}",
+                    f"Eat:{g.pref_eat:.2f} Play:{g.pref_play:.2f} Breed:{g.pref_breed:.2f} Explr:{g.explore_bias:.2f}",
+                    f"Move:{g.move_scalar:.2f} Soc:{g.sociality:.2f} Rest:{g.rest_need:.2f} Plast:{g.brain_plastic:.2f} Will:{g.survival_drive:.2f}"
+                ]
         wrect = pygame.Rect(insp_panel.x+6, insp_panel.y+28, insp_panel.w-12, insp_panel.h-36)
         y = wrect.y
-        for raw in hover_txt.split("\n"):
+        max_lines = lines_fit_insp()
+        for raw in lines[:max_lines]:
             screen.blit(ui_font(16).render(raw, True, (220,230,245)), (wrect.x, y))
             y += ui_font(16).get_height()+2
 
-        # Terminal panel (chat only)
-        term_panel_bg = (20,24,30)
-        pygame.draw.rect(screen, term_panel_bg, term_panel, border_radius=8)
+        # Draw dropdown LAST so it overlays panels when open
+        draw_dropdown(screen, dd_rect, models, selected_model, dd_open, enabled=(not running_sim))
+
+        # Terminal (wrapped text + colors)
+        pygame.draw.rect(screen, (20,24,30), term_panel, border_radius=8)
         pygame.draw.rect(screen, (70,90,120), term_panel, 2, border_radius=8)
         screen.blit(ui_font(18).render("TERMINAL", True, (220,240,255)), (term_panel.x+8, term_panel.y+6))
-        N = lines_fit()
-        if term_lines:
-            start = max(0, len(term_lines) - N - term_scroll)
-            end   = max(0, len(term_lines) - term_scroll)
+
+        font16 = ui_font(16)
+        wrap_w = term_panel.w - 12
+        wrapped = _wrap_term_lines(term_lines, font16, wrap_w)
+        N = lines_fit_term()
+        if wrapped:
+            start = max(0, len(wrapped) - N - term_scroll)
+            end   = max(0, len(wrapped) - term_scroll)
             y = term_panel.y + 30
-            for tl in term_lines[start:end]:
-                col = (235,235,240) if tl.kind==TermLine.USER else (140,200,255)
-                screen.blit(ui_font(16).render(tl.text, True, col), (term_panel.x+6, y))
-                y += ui_font(16).get_height()+2
+            for tl in wrapped[start:end]:
+                if tl.kind == TermLine.USER:     col = (235,235,240)   # user
+                elif tl.kind == TermLine.PACK:   col = (140,200,255)   # translation (cyan)
+                elif tl.kind == TermLine.PRAYER: col = (190,170,255)   # prayer
+                elif tl.kind == TermLine.DONG:   col = (120,220,200)   # dong utterance (teal)
+                else:                             col = (160,140,255)   # GOD reply (prayer only)
+                screen.blit(font16.render(tl.text, True, col), (term_panel.x+6, y))
+                y += font16.get_height()+2
 
         input_rect = pygame.Rect(term_panel.x+8, term_panel.bottom-36, term_panel.w-16, 28)
         pygame.draw.rect(screen, (16,18,22), input_rect, border_radius=6)
