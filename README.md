@@ -19,6 +19,10 @@ pref_play – Playfulness. Higher = more likely to pick up balls or push toys.
 pref_breed – Breeding urge. Higher = stronger drive to seek mates.
 explore_bias – Curiosity. Higher = more exploration and wandering.
 move_scalar – General physical movement speed scaling.
+social_drive – Tendency to stay near other Dongs and coordinate movement.
+risk_sense – Caution factor that increases survival behaviour at low energy.
+memory_span – Strength of remembered food locations when none are nearby.
+chattyness – How frequently the Dong initiates terminal conversations.
 
 These values are floats within ranges (e.g. 0.6–1.4), so no two Dongs are genetically identical.
 Genetics interact with the neural net, meaning two creatures with the same brain weights may behave differently depending on their genes.
@@ -121,7 +125,9 @@ Running
 pip install pygame numpy
 python main.py
 
+LLM setup is preconfigured for your k3s/MetalLB Ollama endpoint `http://192.168.0.202:11434` (AI NUC node `192.168.0.20`) via `config.json` (`ollama.base_url`, `provider`, `cluster_hint`).
+Quick test: `curl http://192.168.0.202:11434/api/tags`.
+
 
 Requires Python 3.10+ and a display environment.
-
 

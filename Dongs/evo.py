@@ -115,6 +115,10 @@ class Genes:
         self.pref_breed  = float(rng.uniform(0.6, 1.4))
         self.explore_bias= float(rng.uniform(0.9, 1.4))
         self.move_scalar = float(rng.uniform(0.90, 1.15))
+        self.social_drive= float(rng.uniform(0.5, 1.5))
+        self.risk_sense  = float(rng.uniform(0.6, 1.4))
+        self.memory_span = float(rng.uniform(0.6, 1.5))
+        self.chattyness  = float(rng.uniform(0.4, 1.6))
 
 # ---------- Bot ----------
 class Bot:
@@ -139,6 +143,10 @@ class Bot:
         self.docked_terminal=False
         self.breeding_until = 0.0
         self.last_breed_time = 0.0
+        self.hunger = 0.0
+        self.joy = 0.4
+        self.social_need = 0.5
+        self.memory_food = np.array([self.x, self.y], dtype=np.float32)
 
         # persistent exploration waypoint
         self.tx = self.rng.uniform(40, 1240)
@@ -173,6 +181,21 @@ class Bot:
             if d<nfd: nfd, nf = d, (fx,fy)
         if nf is None: nf=(self.x,self.y)
         fx,fy=nf
+        if nfd < 200**2:
+            mem_gain = 0.015 * self.genes.memory_span
+            self.memory_food = (1.0-mem_gain) * self.memory_food + mem_gain * np.array([fx, fy], dtype=np.float32)
+        else:
+            fx, fy = float(self.memory_food[0]), float(self.memory_food[1])
+
+        near_count = max(1, len(neighbors))
+        if neighbors:
+            avgx = sum(o.x for o in neighbors) / near_count
+            avgy = sum(o.y for o in neighbors) / near_count
+            social_pull_x = ((avgx - self.x) / 220.0) * self.genes.social_drive
+            social_pull_y = ((avgy - self.y) / 220.0) * self.genes.social_drive
+        else:
+            social_pull_x = 0.0
+            social_pull_y = 0.0
 
         # strong edge repel + centre pull + waypoint attraction + wander
         margin = 80.0
@@ -193,11 +216,12 @@ class Bot:
         self.wander += np.array([np.random.normal(0,0.08), np.random.normal(0,0.08)], dtype=np.float32)
         self.wander *= 0.92
 
+        risk = (1.0 - self.energy/10.0) * self.genes.risk_sense
         x = np.array([
-            (fx-self.x)/220.0 * self.genes.pref_eat + wx + repx + cx_pull,
-            (fy-self.y)/220.0 * self.genes.pref_eat + wy + repy + cy_pull,
+            (fx-self.x)/220.0 * self.genes.pref_eat + wx + repx + cx_pull + social_pull_x * 0.4,
+            (fy-self.y)/220.0 * self.genes.pref_eat + wy + repy + cy_pull + social_pull_y * 0.4,
             self.energy/10.0,
-            len(neighbors)/6.0
+            (len(neighbors)/6.0) - risk + self.social_need * 0.3
         ], dtype=np.float32)
 
         w1,b1,w2,b2 = self.brain
@@ -206,6 +230,7 @@ class Bot:
         ay = float(out[1] + 0.34*self.wander[1])
 
         spd = 54.0 * self.genes.move_scalar * terrain.speed_at(self.x, self.y)
+        spd *= (0.85 + 0.3*self.joy)
         self.vx = ax * spd * dt; self.vy = ay * spd * dt
 
         nx, ny = self.x + self.vx, self.y + self.vy
@@ -224,11 +249,13 @@ class Bot:
                         it["carrier"] = None
                     else:
                         self.fitness += 0.002 * self.genes.nn_growth
+                        self.joy = min(1.0, self.joy + 0.003)
                 elif d2 < 15**2:
                     if it["carrier"] is None and self.energy > 6.0 and self.rng.random() < 0.12*self.genes.pref_play:
                         it["carrier"] = self
                         self.bubble = "🟦"; self.last_bubble_time = now
                         self.fitness += 0.01 * self.genes.nn_growth
+                        self.joy = min(1.0, self.joy + 0.015)
                     else:
                         it["vx"] += dx*0.04; it["vy"] += dy*0.04
                         self.fitness += 0.001 * self.genes.nn_growth
@@ -236,13 +263,18 @@ class Bot:
                 if d2 < 16**2:
                     self.energy = min(10.0, self.energy+0.02)
                     self.fitness += 0.0008 * self.genes.nn_growth
+                    self.joy = min(1.0, self.joy + 0.004)
 
         # eat
-        self.energy -= 0.002 + 0.001*abs(ax) + 0.001*abs(ay)
+        self.energy -= 0.002 + 0.001*abs(ax) + 0.001*abs(ay) + (0.0005 * (1.0 + self.hunger))
         if nfd < 16**2:
             for i,(fx2,fy2,_) in enumerate(list(food.items)):
                 if (fx2-self.x)**2 + (fy2-self.y)**2 < 16**2:
                     self.energy = min(10.0, self.energy+2.2); food.items.pop(i); break
+
+        self.hunger = clamp((10.0 - self.energy) / 10.0, 0.0, 1.0)
+        self.social_need = clamp(self.social_need + 0.002 - (0.015 if neighbors else 0.0), 0.0, 1.0)
+        self.joy = clamp(self.joy - 0.0018 + (0.001 if neighbors else -0.0007), 0.0, 1.0)
 
         self.age += dt; self.fitness = min(self.fitness + 0.001*self.genes.max_intel, 9999.0)
         if self.rng.random() < 0.002:
@@ -250,7 +282,8 @@ class Bot:
 
         # self-initiated terminal chat (rare)
         if not self.waiting_for_reply and not self.docked_terminal:
-            if (self.rng.random() < 0.0007) or (self.energy<4.0 and self.rng.random()<0.0011):
+            chat_drive = 0.0007 * self.genes.chattyness * (1.0 + self.social_need)
+            if (self.rng.random() < chat_drive) or (self.energy<4.0 and self.rng.random()<chat_drive*1.7):
                 if (self.x-terminal.x)**2 + (self.y-terminal.y)**2 < (terminal.radius+12)**2:
                     if terminal.occupied_by is None:
                         terminal.occupied_by = self
