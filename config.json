@@ -6,7 +6,9 @@
   "episodes_per_generation": 6,
   "use_runner": false,
   "ollama": {
-    "base_url": "http://192.168.0.10:11434",
-    "model": "granite3.1-moe:1b"
+    "base_url": "http://192.168.0.202:11434",
+    "model": "granite3.1-moe:1b",
+    "provider": "ollama-metallb",
+    "cluster_hint": "k3s metallb 192.168.0.202 on AI NUC 192.168.0.20"
   }
 }

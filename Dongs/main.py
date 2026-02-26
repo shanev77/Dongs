@@ -6,15 +6,23 @@ import sprites
 from ai_llm import get_models, set_llm_target, llm_status_line, llm_rate_limits, pack_reply
 
 # ---------- config ----------
-CFG_PATH = os.path.join(os.path.dirname(__file__), "config.json")
-try:
-    with open(CFG_PATH, "r", encoding="utf-8") as f:
-        CFG = json.load(f)
-except Exception:
-    CFG = {}
+CFG = {}
+for cfg_path in (
+    os.path.join(os.path.dirname(__file__), "config.json"),
+    os.path.join(os.path.dirname(__file__), "..", "config.json"),
+):
+    try:
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            CFG = json.load(f)
+            break
+    except Exception:
+        continue
 
-AIHUB_URL   = CFG.get("base_url", "http://192.168.0.10:11434")
-DEFAULT_MOD = CFG.get("default_model", "granite3.1-moe:1b")
+OLLAMA_CFG = CFG.get("ollama", {})
+AIHUB_URL   = OLLAMA_CFG.get("base_url", CFG.get("base_url", "http://192.168.0.202:11434"))
+DEFAULT_MOD = OLLAMA_CFG.get("model", CFG.get("default_model", "granite3.1-moe:1b"))
+LLM_PROVIDER = OLLAMA_CFG.get("provider", "ollama-metallb")
+CLUSTER_HINT = OLLAMA_CFG.get("cluster_hint", "k3s metallb 192.168.0.202 on AI NUC 192.168.0.20")
 
 WORLD_W, WORLD_H = 1280, 720
 UI_W = 540
@@ -113,7 +121,7 @@ def main():
         models = [DEFAULT_MOD]
     selected_model = models.index(DEFAULT_MOD) if DEFAULT_MOD in models else 0
     dd_open = False
-    set_llm_target(AIHUB_URL, models[selected_model])
+    set_llm_target(AIHUB_URL, models[selected_model], provider=LLM_PROVIDER, cluster_hint=CLUSTER_HINT)
 
     # Panels — shorten LLM panel ~half so dropdown fits comfortably
     term_h = 270
@@ -150,7 +158,9 @@ def main():
         last_log_t = 0.0
         header = [
             "timestamp","dong_id","age","energy","fitness",
-            "gene_max_intel","gene_nn_growth","gene_pref_eat","gene_pref_play","gene_pref_breed","gene_explore_bias","gene_move_scalar"
+            "gene_max_intel","gene_nn_growth","gene_pref_eat","gene_pref_play","gene_pref_breed",
+            "gene_explore_bias","gene_move_scalar","gene_social_drive","gene_risk_sense","gene_memory_span","gene_chattyness",
+            "state_hunger","state_joy","state_social_need"
         ]
         def labels(prefix, shape):
             if len(shape)==2:
@@ -168,7 +178,9 @@ def main():
                 f"{b.age:.2f}", f"{b.energy:.2f}", f"{b.fitness:.3f}",
                 f"{b.genes.max_intel:.3f}", f"{b.genes.nn_growth:.3f}",
                 f"{b.genes.pref_eat:.3f}", f"{b.genes.pref_play:.3f}", f"{b.genes.pref_breed:.3f}",
-                f"{b.genes.explore_bias:.3f}", f"{b.genes.move_scalar:.3f}"
+                f"{b.genes.explore_bias:.3f}", f"{b.genes.move_scalar:.3f}",
+                f"{b.genes.social_drive:.3f}", f"{b.genes.risk_sense:.3f}", f"{b.genes.memory_span:.3f}", f"{b.genes.chattyness:.3f}",
+                f"{getattr(b, 'hunger', 0.0):.3f}", f"{getattr(b, 'joy', 0.0):.3f}", f"{getattr(b, 'social_need', 0.0):.3f}"
             ]
             row += [f"{float(x):.4f}" for x in w1.flatten()]
             row += [f"{float(x):.4f}" for x in b1.flatten()]
@@ -258,7 +270,7 @@ def main():
                         idx = (ev.pos[1] - (lst.y+6)) // 24
                         if 0 <= idx < len(models):
                             selected_model = idx
-                            set_llm_target(AIHUB_URL, models[selected_model])
+                            set_llm_target(AIHUB_URL, models[selected_model], provider=LLM_PROVIDER, cluster_hint=CLUSTER_HINT)
                         dd_open = False
                     else:
                         dd_open = False
@@ -314,7 +326,18 @@ def main():
                                 # pull a Dong if possible; otherwise still reply
                                 if not term_block.occupied_by:
                                     attract_curious_dong(msg)
-                                reply = pack_reply(msg)
+                                life_state = None
+                                if term_block.occupied_by:
+                                    d = term_block.occupied_by
+                                    mood = "playful" if getattr(d, "joy", 0.0) > 0.65 else ("tired" if d.energy < 3.5 else "curious")
+                                    life_state = {
+                                        "mood": mood,
+                                        "energy": float(d.energy),
+                                        "hunger": float(getattr(d, "hunger", 0.0)),
+                                        "social_need": float(getattr(d, "social_need", 0.5)),
+                                        "population": len(pop.bots),
+                                    }
+                                reply = pack_reply(msg, life_state=life_state)
                                 term_lines.append(TermLine(f"PACK≫ {reply}", TermLine.PACK))
                                 if term_block.occupied_by:
                                     d = term_block.occupied_by
@@ -410,10 +433,13 @@ def main():
                     f"{nearest.display_id}\n"
                     f"Age: {nearest.age:.1f}/{nearest.max_age:.1f}\n"
                     f"Energy: {nearest.energy:.2f}  Fit: {nearest.fitness:.3f}\n"
-                    f"Genes: maxInt={nearest.genes.max_intel:.2f} "
-                    f"nnGrow={nearest.genes.nn_growth:.2f} eat={nearest.genes.pref_eat:.2f} "
-                    f"play={nearest.genes.pref_play:.2f} breed={nearest.genes.pref_breed:.2f} "
+                    f"Genes: maxInt={nearest.genes.max_intel:.2f} nnGrow={nearest.genes.nn_growth:.2f} "
+                    f"eat={nearest.genes.pref_eat:.2f} play={nearest.genes.pref_play:.2f} breed={nearest.genes.pref_breed:.2f}\n"
+                    f"Life genes: social={nearest.genes.social_drive:.2f} risk={nearest.genes.risk_sense:.2f} "
+                    f"memory={nearest.genes.memory_span:.2f} chat={nearest.genes.chattyness:.2f} "
                     f"explore={nearest.genes.explore_bias:.2f} move={nearest.genes.move_scalar:.2f}\n"
+                    f"State: hunger={getattr(nearest, 'hunger', 0.0):.2f} joy={getattr(nearest, 'joy', 0.0):.2f} "
+                    f"socialNeed={getattr(nearest, 'social_need', 0.0):.2f}\n"
                     f"NN: w1 μ={float(w1.mean()):.2f} σ={float(w1.std()):.2f} | "
                     f"w2 μ={float(w2.mean()):.2f} σ={float(w2.std()):.2f}"
                 )
